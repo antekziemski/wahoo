@@ -28,13 +28,13 @@
       user-select: none;
     }
 
-    /* Pasek narzędzi */
     .toolbar {
       display: flex;
       gap: 6px;
       padding: 6px;
       background: #050505;
       border-bottom: 1px solid var(--border);
+      z-index: 1000;
     }
     button, .file-btn {
       flex: 1;
@@ -42,7 +42,7 @@
       color: var(--text);
       border: 1px solid #333;
       border-radius: 6px;
-      padding: 8px 4px;
+      padding: 10px 4px;
       font-size: 13px;
       font-weight: 700;
       text-transform: uppercase;
@@ -52,7 +52,6 @@
     button.active { background: #003b44; border-color: var(--accent); color: var(--accent); }
     button.rec { background: #3a0000; border-color: var(--danger); color: #ff6b6b; }
 
-    /* Pasek nawigacji (skręty GPX) */
     #nav-banner {
       display: none;
       background: #002b36;
@@ -61,10 +60,8 @@
       font-size: 20px;
       font-weight: 800;
       color: var(--accent);
-      letter-spacing: 0.5px;
     }
 
-    /* Główny układ: dane + pasek radaru po prawej */
     .main-wrap {
       flex: 1;
       display: flex;
@@ -78,7 +75,6 @@
       overflow: hidden;
     }
 
-    /* Siatka Wahoo */
     .grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -113,7 +109,6 @@
     .hero .val { font-size: 68px; }
     .unit { font-size: 14px; color: var(--muted); margin-left: 3px; }
 
-    /* Mapa */
     #map-wrap {
       flex: 1;
       position: relative;
@@ -122,7 +117,6 @@
     #map { width: 100%; height: 100%; background: #000; }
     .leaflet-control-attribution { display: none !important; }
 
-    /* Pasek radaru Garmin Varia (prawa krawędź) */
     #radar-bar {
       width: 26px;
       background: #080808;
@@ -156,11 +150,12 @@
 <body>
 
   <div class="toolbar">
-    <button id="btn-start">Start</button>
-    <button id="btn-hr">HR BLE</button>
-    <button id="btn-varia">Varia</button>
-    <label class="file-btn">GPX<input type="file" id="gpx-input" accept=".gpx" hidden /></label>
-    <button id="btn-wake">Ekran</button>
+    <button type="button" id="btn-start">Start</button>
+    <button type="button" id="btn-hr">HR BLE</button>
+    <button type="button" id="btn-varia">Varia</button>
+    <button type="button" id="btn-gpx">GPX</button>
+    <input type="file" id="gpx-input" accept="*/*" style="display:none" />
+    <button type="button" id="btn-wake">Ekran</button>
   </div>
 
   <div id="nav-banner">
@@ -197,7 +192,6 @@
       </div>
     </div>
 
-    <!-- Pasek radaru Varia -->
     <div id="radar-bar">
       <div class="bike-icon"></div>
       <div id="radar-targets"></div>
@@ -206,21 +200,24 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-    // --- 0. SYGNAŁ DŹWIĘKOWY (WEB AUDIO API) ---
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // --- 0. SYGNAŁ DŹWIĘKOWY (TWORZONY DOPIERO PO KLIKNIĘCIU) ---
+    let audioCtx = null;
     function beep(freq, dur) {
-      if (audioCtx.state === 'suspended') audioCtx.resume();
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.frequency.value = freq;
-      gain.gain.value = 0.25;
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-      osc.start();
-      setTimeout(() => osc.stop(), dur);
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.frequency.value = freq;
+        gain.gain.value = 0.25;
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        setTimeout(() => osc.stop(), dur);
+      } catch (e) {}
     }
 
-    // --- 1. MAPA LEAFLET (CARTO DARK MATTER) + CACHE OFFLINE ---
+    // --- 1. MAPA LEAFLET + CACHE OFFLINE ---
     const map = L.map('map', { zoomControl: false }).setView([52.23, 21.01], 14);
     const tileUrl = 'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png';
 
@@ -259,7 +256,7 @@
     const rideTrack = L.polyline([], { color: '#00e5ff', weight: 4 }).addTo(map);
     let gpxLayer = null;
 
-    // --- 2. IMPORT PLIKU GPX + WYKRYWANIE SKRĘTÓW ---
+    // --- 2. IMPORT PLIKU GPX (KOMPATYBILNY Z ANDROIDEM) ---
     let gpxPoints = [];
     let turnPoints = [];
     let alertedTurns = new Set();
@@ -273,18 +270,31 @@
       return (toDeg(Math.atan2(y, x)) + 360) % 360;
     }
 
+    document.getElementById('btn-gpx').addEventListener('click', () => {
+      document.getElementById('gpx-input').click();
+    });
+
     document.getElementById('gpx-input').addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
-      const text = await file.text();
-      const xml = new DOMParser().parseFromString(text, 'text/xml');
-      gpxPoints = [...xml.querySelectorAll('trkpt, rtept')].map(p => [
-        parseFloat(p.getAttribute('lat')),
-        parseFloat(p.getAttribute('lon'))
-      ]);
-      if (gpxPoints.length > 2) {
+      try {
+        const text = await file.text();
+        const xml = new DOMParser().parseFromString(text, 'text/xml');
+        let nodes = [...xml.getElementsByTagName('trkpt')];
+        if (nodes.length === 0) nodes = [...xml.getElementsByTagName('rtept')];
+
+        gpxPoints = nodes.map(p => [
+          parseFloat(p.getAttribute('lat')),
+          parseFloat(p.getAttribute('lon'))
+        ]).filter(pt => !isNaN(pt[0]) && !isNaN(pt[1]));
+
+        if (gpxPoints.length < 2) {
+          alert('Nie znaleziono punktów trasy w tym pliku!');
+          return;
+        }
+
         if (gpxLayer) map.removeLayer(gpxLayer);
-        gpxLayer = L.polyline(gpxPoints, { color: '#ff007f', weight: 5, opacity: 0.85 }).addTo(map);
+        gpxLayer = L.polyline(gpxPoints, { color: '#ff007f', weight: 5, opacity: 0.9 }).addTo(map);
         map.fitBounds(gpxLayer.getBounds());
 
         turnPoints = [];
@@ -303,13 +313,37 @@
           }
         }
         document.getElementById('nav-banner').style.display = 'block';
+        document.getElementById('nav-arrow').textContent = '✓';
+        document.getElementById('nav-text').textContent = `Wczytano GPX (${gpxPoints.length} pkt)`;
+      } catch (err) {
+        alert('Błąd wczytywania GPX: ' + err.message);
       }
     });
 
-    // --- 3. GPS, LICZNIK JAZDY I NAWIGACJA PO SKRĘTACH ---
+    // --- 3. PRZYCISK START I LICZNIK CZASU ---
     let running = false, totalDist = 0, totalElev = 0, elapsedSec = 0;
     let lastPos = null, lastAlt = null, timerInt = null;
 
+    document.getElementById('btn-start').addEventListener('click', function () {
+      running = !running;
+      this.textContent = running ? 'Pauza' : 'Start';
+      this.classList.toggle('rec', running);
+      beep(running ? 800 : 400, 100);
+
+      if (running) {
+        timerInt = setInterval(() => {
+          elapsedSec++;
+          const h = Math.floor(elapsedSec / 3600);
+          const m = String(Math.floor((elapsedSec % 3600) / 60)).padStart(2, '0');
+          const s = String(elapsedSec % 60).padStart(2, '0');
+          document.getElementById('time').textContent = h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
+        }, 1000);
+      } else {
+        clearInterval(timerInt);
+      }
+    });
+
+    // --- 4. GPS ---
     function haversine(lat1, lon1, lat2, lon2) {
       const R = 6371000, toRad = d => d * Math.PI / 180;
       const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
@@ -317,44 +351,139 @@
       return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
-    navigator.geolocation.watchPosition((pos) => {
-      const { latitude, longitude, speed, altitude, accuracy } = pos.coords;
-      document.getElementById('gps-acc').textContent = `(±${Math.round(accuracy)}m)`;
-      const latlng = [latitude, longitude];
-      riderMarker.setLatLng(latlng);
-      map.panTo(latlng, { animate: false });
+    if ('geolocation' in navigator) {
+      navigator.geolocation.watchPosition((pos) => {
+        const { latitude, longitude, speed, altitude, accuracy } = pos.coords;
+        document.getElementById('gps-acc').textContent = `(±${Math.round(accuracy)}m)`;
+        const latlng = [latitude, longitude];
+        riderMarker.setLatLng(latlng);
+        map.panTo(latlng, { animate: false });
 
-      // Sprawdzanie odległości do najbliższego zakrętu z GPX
-      if (turnPoints.length > 0) {
-        let nextTurn = null, minDist = Infinity;
-        for (const t of turnPoints) {
-          const d = haversine(latitude, longitude, t.lat, t.lon);
-          if (d < minDist && d > 12) {
-            minDist = d;
-            nextTurn = t;
+        if (turnPoints.length > 0) {
+          let nextTurn = null, minDist = Infinity;
+          for (const t of turnPoints) {
+            const d = haversine(latitude, longitude, t.lat, t.lon);
+            if (d < minDist && d > 12) {
+              minDist = d;
+              nextTurn = t;
+            }
+          }
+          if (nextTurn && minDist < 300) {
+            document.getElementById('nav-arrow').textContent = `${Math.round(minDist)} m`;
+            document.getElementById('nav-text').textContent = nextTurn.dir;
+            if (minDist < 65 && !alertedTurns.has(nextTurn.idx)) {
+              beep(1000, 150);
+              alertedTurns.add(nextTurn.idx);
+            }
+          } else {
+            document.getElementById('nav-arrow').textContent = '⬆';
+            document.getElementById('nav-text').textContent = 'Jedź prosto';
           }
         }
-        if (nextTurn && minDist < 300) {
-          document.getElementById('nav-arrow').textContent = `${Math.round(minDist)} m`;
-          document.getElementById('nav-text').textContent = nextTurn.dir;
-          if (minDist < 65 && !alertedTurns.has(nextTurn.idx)) {
-            beep(1000, 150);
-            alertedTurns.add(nextTurn.idx);
-          }
-        } else {
-          document.getElementById('nav-arrow').textContent = '⬆';
-          document.getElementById('nav-text').textContent = 'Jedź prosto';
-        }
-      }
 
-      const kmh = speed && speed > 0.4 ? (speed * 3.6) : 0;
-      document.getElementById('speed').textContent = kmh.toFixed(1);
+        const kmh = speed && speed > 0.4 ? (speed * 3.6) : 0;
+        document.getElementById('speed').textContent = kmh.toFixed(1);
 
-      if (running && accuracy < 35) {
-        if (lastPos) {
-          const d = haversine(lastPos[0], lastPos[1], latitude, longitude);
-          if (d > 3) {
-            totalDist += d;
-            document.getElementById('dist').textContent = (totalDist / 1000).toFixed(2);
-            rideTrack.addLatLng(latlng);
+        if (running && accuracy < 35) {
+          if (lastPos) {
+            const d = haversine(lastPos[0], lastPos[1], latitude, longitude);
+            if (d > 3) {
+              totalDist += d;
+              document.getElementById('dist').textContent = (totalDist / 1000).toFixed(2);
+              rideTrack.addLatLng(latlng);
+              lastPos = latlng;
+            }
+          } else {
             lastPos = latlng;
+          }
+          if (altitude !== null) {
+            if (lastAlt !== null && (altitude - lastAlt) > 2) {
+              totalElev += (altitude - lastAlt);
+              document.getElementById('elev').textContent = Math.round(totalElev);
+            }
+            lastAlt = altitude;
+          }
+        }
+      }, (err) => {
+        document.getElementById('gps-acc').textContent = `(GPS BŁĄD)`;
+      }, { enableHighAccuracy: true, maximumAge: 1000 });
+    }
+
+    // --- 5. TĘTNO BLUETOOTH LE ---
+    document.getElementById('btn-hr').addEventListener('click', async function () {
+      try {
+        const dev = await navigator.bluetooth.requestDevice({ filters: [{ services: ['heart_rate'] }] });
+        const server = await dev.gatt.connect();
+        const service = await server.getPrimaryService('heart_rate');
+        const char = await service.getCharacteristic('heart_rate_measurement');
+        await char.startNotifications();
+        this.classList.add('active');
+        char.addEventListener('characteristicvaluechanged', (e) => {
+          const dv = e.target.value;
+          const flags = dv.getUint8(0);
+          const hr = (flags & 0x01) ? dv.getUint16(1, true) : dv.getUint8(1);
+          document.getElementById('hr').textContent = hr;
+        });
+      } catch (err) { alert('Błąd HR BLE: ' + err); }
+    });
+
+    // --- 6. RADAR GARMIN VARIA BLE ---
+    let hadThreat = false;
+    document.getElementById('btn-varia').addEventListener('click', async function () {
+      const VARIA_SVC = '6a4e3200-667b-11e3-949a-0800200c9a66';
+      const VARIA_CHR = '6a4e3203-667b-11e3-949a-0800200c9a66';
+      try {
+        const dev = await navigator.bluetooth.requestDevice({
+          filters: [{ services: [VARIA_SVC] }, { namePrefix: 'Varia' }],
+          optionalServices: [VARIA_SVC]
+        });
+        const server = await dev.gatt.connect();
+        const service = await server.getPrimaryService(VARIA_SVC);
+        const char = await service.getCharacteristic(VARIA_CHR);
+        await char.startNotifications();
+        this.classList.add('active');
+
+        char.addEventListener('characteristicvaluechanged', (e) => {
+          const dv = e.target.value;
+          const bar = document.getElementById('radar-bar');
+          const box = document.getElementById('radar-targets');
+          box.innerHTML = '';
+          let maxThreat = 0;
+
+          for (let i = 1; i + 2 < dv.byteLength; i += 3) {
+            const distM = dv.getUint8(i + 1);
+            const speedMs = dv.getUint8(i + 2);
+            if (distM > 0 && distM <= 140) {
+              const pct = Math.min(92, Math.max(8, (distM / 140) * 90));
+              const dot = document.createElement('div');
+              dot.className = 'car-dot';
+              dot.style.bottom = `${100 - pct}%`;
+              box.appendChild(dot);
+              maxThreat = Math.max(maxThreat, speedMs > 22 ? 2 : 1);
+            }
+          }
+
+          bar.className = maxThreat === 2 ? 'danger' : (maxThreat === 1 ? 'warn' : '');
+          if (maxThreat > 0 && !hadThreat) { beep(880, 180); hadThreat = true; }
+          if (maxThreat === 0 && hadThreat) { beep(520, 120); hadThreat = false; }
+        });
+      } catch (err) { alert('Błąd Varia BLE: ' + err); }
+    });
+
+    // --- 7. BLOKADA WYGASZANIA EKRANU ---
+    let wakeLock = null;
+    document.getElementById('btn-wake').addEventListener('click', async function () {
+      try {
+        if (!wakeLock) {
+          wakeLock = await navigator.wakeLock.request('screen');
+          this.classList.add('active');
+        } else {
+          await wakeLock.release();
+          wakeLock = null;
+          this.classList.remove('active');
+        }
+      } catch (err) { alert('Brak wsparcia WakeLock: ' + err); }
+    });
+  </script>
+</body>
+</html>
